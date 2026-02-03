@@ -45,7 +45,9 @@ func getJWKSClient() *jwtutil.JWKSClient {
 	}
 	
 	jwksClientOnce.Do(func() {
-		jwksClient = jwtutil.NewJWKSClient(setting.JWT.JWKSURL)
+		cacheTTL := time.Duration(setting.JWT.JWKSCacheTTL) * time.Second
+		httpTimeout := time.Duration(setting.JWT.JWKSHTTPTimeout) * time.Second
+		jwksClient = jwtutil.NewJWKSClient(setting.JWT.JWKSURL, cacheTTL, httpTimeout)
 	})
 	
 	return jwksClient
@@ -305,7 +307,8 @@ func (j *JWT) Verify(req *http.Request, w http.ResponseWriter, store DataStore, 
 	user, err := user_model.GetUserByName(req.Context(), username)
 	if err != nil {
 		if user_model.IsErrUserNotExist(err) {
-			log.Trace("JWT Authentication: User not found: %s", username)
+			// Use generic error message to avoid user enumeration
+			log.Error("JWT Authentication: User lookup failed")
 			return nil, user_model.ErrUserNotExist{Name: username}
 		}
 		log.Error("JWT Authentication: Failed to get user: %v", err)

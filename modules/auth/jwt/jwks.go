@@ -45,13 +45,13 @@ type JWKSClient struct {
 }
 
 // NewJWKSClient creates a new JWKS client
-func NewJWKSClient(jwksURL string) *JWKSClient {
+func NewJWKSClient(jwksURL string, cacheTTL time.Duration, httpTimeout time.Duration) *JWKSClient {
 	return &JWKSClient{
 		jwksURL: jwksURL,
 		keys:    make(map[string]interface{}),
-		cacheTTL: 1 * time.Hour, // Cache keys for 1 hour
+		cacheTTL: cacheTTL,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: httpTimeout,
 		},
 	}
 }

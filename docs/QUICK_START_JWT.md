@@ -40,8 +40,12 @@ docker restart gitea
 
 Get a JWT token from your identity provider. The method depends on your IdP:
 
-### Keycloak Example
+### Keycloak Example (Using Resource Owner Password Flow)
+
+**⚠️ Security Note**: The Resource Owner Password Credentials (ROPC) flow shown below is **NOT recommended for production** as it exposes user credentials directly to the client. For production use, prefer the Authorization Code flow with PKCE or Client Credentials flow.
+
 ```bash
+# For testing/development only - NOT for production
 curl -X POST "https://keycloak.example.com/realms/your-realm/protocol/openid-connect/token" \
   -d "client_id=your-client" \
   -d "client_secret=your-secret" \
@@ -51,8 +55,10 @@ curl -X POST "https://keycloak.example.com/realms/your-realm/protocol/openid-con
   | jq -r '.access_token'
 ```
 
-### Auth0 Example
+### Auth0 Example (Using Client Credentials - Recommended)
+
 ```bash
+# Client Credentials flow - suitable for machine-to-machine
 curl -X POST "https://your-tenant.auth0.com/oauth/token" \
   -H "Content-Type: application/json" \
   -d '{
@@ -63,6 +69,15 @@ curl -X POST "https://your-tenant.auth0.com/oauth/token" \
   }' \
   | jq -r '.access_token'
 ```
+
+### Production Recommendation
+
+For production environments, use one of these secure flows:
+- **Authorization Code with PKCE**: For user-facing applications
+- **Client Credentials**: For machine-to-machine authentication
+- **Device Flow**: For devices without browsers
+
+Consult your identity provider's documentation for implementing these flows.
 
 ## Step 4: Test the API
 

@@ -18,6 +18,8 @@ var JWT = struct {
 	SkipAudienceCheck  bool     // Skip audience validation
 	UsernameClaim      string   // JWT claim containing the username (e.g., "sub", "preferred_username", "email")
 	RolesClaim         string   // JWT claim containing user roles (e.g., "roles", "groups")
+	JWKSCacheTTL       int64    // JWKS cache TTL in seconds (default: 3600)
+	JWKSHTTPTimeout    int      // JWKS HTTP request timeout in seconds (default: 10)
 }{
 	Enabled:            false,
 	HeaderName:         "Authorization", // Default to Authorization header
@@ -28,6 +30,8 @@ var JWT = struct {
 	SkipAudienceCheck:  false,
 	UsernameClaim:      "preferred_username",
 	RolesClaim:         "roles",
+	JWKSCacheTTL:       3600,  // 1 hour default
+	JWKSHTTPTimeout:    10,    // 10 seconds default
 }
 
 func loadJWTFrom(rootCfg ConfigProvider) {
@@ -61,7 +65,21 @@ func loadJWTFrom(rootCfg ConfigProvider) {
 	JWT.UsernameClaim = sec.Key("USERNAME_CLAIM").MustString("preferred_username")
 	JWT.RolesClaim = sec.Key("ROLES_CLAIM").MustString("roles")
 	
+	// JWKS settings
+	JWT.JWKSCacheTTL = sec.Key("JWKS_CACHE_TTL").MustInt64(3600)
+	if JWT.JWKSCacheTTL <= 0 {
+		log.Warn("[jwt] Invalid JWKS cache TTL, using default 3600 seconds")
+		JWT.JWKSCacheTTL = 3600
+	}
+	
+	JWT.JWKSHTTPTimeout = sec.Key("JWKS_HTTP_TIMEOUT").MustInt(10)
+	if JWT.JWKSHTTPTimeout <= 0 {
+		log.Warn("[jwt] Invalid JWKS HTTP timeout, using default 10 seconds")
+		JWT.JWKSHTTPTimeout = 10
+	}
+	
 	log.Info("[jwt] JWT authentication enabled with JWKS URL: %s", JWT.JWKSURL)
 	log.Info("[jwt] JWT header name: %s", JWT.HeaderName)
 	log.Info("[jwt] Username claim: %s, Roles claim: %s", JWT.UsernameClaim, JWT.RolesClaim)
+	log.Info("[jwt] JWKS cache TTL: %d seconds, HTTP timeout: %d seconds", JWT.JWKSCacheTTL, JWT.JWKSHTTPTimeout)
 }
