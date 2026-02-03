@@ -218,6 +218,79 @@ http:
           X-JWT-Token: "{{ .Request.Header.Get \"Authorization\" }}"
 ```
 
+### Teleport Application Access
+
+Teleport provides zero-trust access to applications with automatic JWT token injection. Here's how to set it up:
+
+#### 1. Configure Teleport Application Service
+
+Add to your Teleport configuration (`teleport.yaml`):
+
+```yaml
+app_service:
+  enabled: true
+  apps:
+  - name: "gitea"
+    uri: "http://gitea-internal.local:3000"
+    public_addr: "gitea.example.com"
+    # Teleport will inject JWT token in this header
+    rewrite:
+      headers:
+      - "Teleport-Jwt-Assertion: {{internal.jwt}}"
+```
+
+#### 2. Configure Gitea
+
+Add to your `app.ini`:
+
+```ini
+[jwt]
+ENABLED = true
+HEADER_NAME = Teleport-Jwt-Assertion
+JWKS_URL = https://teleport-proxy.example.com/.well-known/jwks.json
+ISSUER = https://teleport-proxy.example.com
+AUDIENCE = gitea
+USERNAME_CLAIM = username
+ROLES_CLAIM = roles
+```
+
+#### 3. Access Gitea through Teleport
+
+```bash
+# Login to Teleport
+tsh login --proxy=teleport-proxy.example.com
+
+# List available apps
+tsh apps ls
+
+# Login to the Gitea app
+tsh apps login gitea
+
+# Access Gitea - Teleport will automatically inject JWT
+curl https://gitea.example.com/api/v1/user
+
+# Or use your browser - authentication is transparent
+# Navigate to https://gitea.example.com
+```
+
+#### Key Benefits of Teleport Integration
+
+- **Zero-trust access**: All access goes through Teleport with identity verification
+- **Automatic JWT injection**: No need to manually manage tokens
+- **Session recording**: All API calls can be audited through Teleport
+- **Role-based access**: Teleport roles map directly to Gitea through JWT claims
+- **Certificate-based**: Teleport uses short-lived certificates for additional security
+- **Unified access**: Same login for SSH, Kubernetes, databases, and web apps
+
+#### Teleport-specific Notes
+
+- The JWKS endpoint is typically at `https://your-proxy:3080/.well-known/jwks.json`
+- Teleport uses the `username` claim (not `sub` or `preferred_username`)
+- Roles are in the `roles` claim as an array of Teleport role names
+- Users must exist in both Teleport and Gitea with matching usernames
+- Token expiration is controlled by Teleport (default: 12 hours)
+
+
 ## Next Steps
 
 1. Review the [full documentation](JWT_AUTHENTICATION.md)

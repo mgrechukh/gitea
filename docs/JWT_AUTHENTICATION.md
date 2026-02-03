@@ -108,6 +108,43 @@ USERNAME_CLAIM = sub
 ROLES_CLAIM = groups
 ```
 
+### Example 5: Teleport Application Access
+
+Teleport is a unified access plane that can act as an application proxy, automatically adding JWT tokens to forwarded requests.
+
+```ini
+[jwt]
+ENABLED = true
+HEADER_NAME = Teleport-Jwt-Assertion
+JWKS_URL = https://your-teleport-proxy.example.com/.well-known/jwks.json
+ISSUER = https://your-teleport-proxy.example.com
+AUDIENCE = gitea
+USERNAME_CLAIM = username
+ROLES_CLAIM = roles
+```
+
+**Teleport Configuration** (`teleport.yaml`):
+
+```yaml
+app_service:
+  enabled: true
+  apps:
+  - name: "gitea"
+    uri: "http://gitea-internal:3000"
+    public_addr: "gitea.example.com"
+    rewrite:
+      headers:
+      - "Teleport-Jwt-Assertion: {{internal.jwt}}"
+```
+
+**Key Points for Teleport:**
+- Teleport adds JWT tokens in the `Teleport-Jwt-Assertion` header by default
+- The JWKS URL is typically `https://your-proxy:3080/.well-known/jwks.json`
+- Username is in the `username` claim (not `sub` or `preferred_username`)
+- Roles are provided in the `roles` claim as an array
+- Ensure Gitea users exist with usernames matching Teleport users
+- The issuer is your Teleport proxy address
+
 ## How It Works
 
 1. **Request arrives**: Gitea receives an HTTP request with a JWT token in the configured header

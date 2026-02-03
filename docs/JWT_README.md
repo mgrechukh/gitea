@@ -90,6 +90,17 @@ ISSUER = https://login.microsoftonline.com/{tenant-id}/v2.0
 USERNAME_CLAIM = preferred_username
 ```
 
+### Teleport Application Access
+```ini
+[jwt]
+ENABLED = true
+HEADER_NAME = Teleport-Jwt-Assertion
+JWKS_URL = https://your-teleport-proxy.example.com/.well-known/jwks.json
+ISSUER = https://your-teleport-proxy.example.com
+USERNAME_CLAIM = username
+ROLES_CLAIM = roles
+```
+
 ## How It Works
 
 1. **Request arrives** with JWT token in configured header
