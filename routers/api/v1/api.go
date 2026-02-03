@@ -777,6 +777,12 @@ func buildAuthGroup() *auth.Group {
 		&auth.HTTPSign{},
 		&auth.Basic{}, // FIXME: this should be removed once we don't allow basic auth in API
 	)
+	
+	// Add JWT authentication if enabled
+	if setting.JWT.Enabled {
+		group.Add(&auth.JWT{})
+	}
+	
 	if setting.Service.EnableReverseProxyAuthAPI {
 		group.Add(&auth.ReverseProxy{})
 	}
