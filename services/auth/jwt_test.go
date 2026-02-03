@@ -4,13 +4,10 @@
 package auth
 
 import (
-	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"code.gitea.io/gitea/models/unittest"
-	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/reqctx"
 	"code.gitea.io/gitea/modules/setting"
 
@@ -23,33 +20,18 @@ func TestJWTAuth(t *testing.T) {
 
 	// Save original settings
 	origEnabled := setting.JWT.Enabled
-	origSecret := setting.JWT.Secret
-	origIssuer := setting.JWT.Issuer
-	origAudience := setting.JWT.Audience
-	origAlgorithm := setting.JWT.SigningAlgorithm
-	origExpiration := setting.JWT.ExpirationTime
+	origHeaderName := setting.JWT.HeaderName
+	origJWKSURL := setting.JWT.JWKSURL
 
 	// Restore original settings after test
 	defer func() {
 		setting.JWT.Enabled = origEnabled
-		setting.JWT.Secret = origSecret
-		setting.JWT.Issuer = origIssuer
-		setting.JWT.Audience = origAudience
-		setting.JWT.SigningAlgorithm = origAlgorithm
-		setting.JWT.ExpirationTime = origExpiration
+		setting.JWT.HeaderName = origHeaderName
+		setting.JWT.JWKSURL = origJWKSURL
 	}()
-
-	// Configure JWT for testing
-	setting.JWT.Enabled = true
-	setting.JWT.Secret = "test-secret-key-for-jwt-authentication"
-	setting.JWT.Issuer = "gitea-test"
-	setting.JWT.Audience = []string{"gitea-test"}
-	setting.JWT.SigningAlgorithm = "HS256"
-	setting.JWT.ExpirationTime = 3600
 
 	t.Run("Disabled JWT", func(t *testing.T) {
 		setting.JWT.Enabled = false
-		defer func() { setting.JWT.Enabled = true }()
 
 		req := httptest.NewRequest("GET", "/api/v1/user", nil)
 		req.Header.Set("Authorization", "Bearer test-token")
@@ -63,33 +45,10 @@ func TestJWTAuth(t *testing.T) {
 		assert.Nil(t, err)
 	})
 
-	t.Run("Valid JWT Token", func(t *testing.T) {
-		// Get a test user
-		user, err := user_model.GetUserByID(unittest.DefaultContext, 1)
-		assert.NoError(t, err)
-
-		// Generate a valid token
-		token, err := GenerateJWTToken(user.ID, user.Name)
-		assert.NoError(t, err)
-		assert.NotEmpty(t, token)
-
-		// Create request with token
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.NoError(t, err)
-		assert.NotNil(t, authUser)
-		assert.Equal(t, user.ID, authUser.ID)
-		assert.Equal(t, user.Name, authUser.Name)
-		assert.Equal(t, true, ds["IsJWTAuth"])
-	})
-
 	t.Run("Missing Authorization Header", func(t *testing.T) {
+		setting.JWT.Enabled = true
+		setting.JWT.JWKSURL = "https://example.com/jwks"
+
 		req := httptest.NewRequest("GET", "/api/v1/user", nil)
 		w := httptest.NewRecorder()
 		ds := make(reqctx.ContextData)
@@ -102,6 +61,9 @@ func TestJWTAuth(t *testing.T) {
 	})
 
 	t.Run("Invalid Token Format", func(t *testing.T) {
+		setting.JWT.Enabled = true
+		setting.JWT.JWKSURL = "https://example.com/jwks"
+
 		req := httptest.NewRequest("GET", "/api/v1/user", nil)
 		req.Header.Set("Authorization", "Bearer invalid-token")
 		w := httptest.NewRecorder()
@@ -114,305 +76,242 @@ func TestJWTAuth(t *testing.T) {
 		assert.Nil(t, err) // Invalid format should be ignored (not JWT)
 	})
 
-	t.Run("Expired Token", func(t *testing.T) {
-		// Create an expired token
-		user, err := user_model.GetUserByID(unittest.DefaultContext, 1)
-		assert.NoError(t, err)
-
-		now := time.Now()
-		claims := &JWTClaims{
-			UserID:   user.ID,
-			Username: user.Name,
-			RegisteredClaims: jwt.RegisteredClaims{
-				Issuer:    setting.JWT.Issuer,
-				Audience:  jwt.ClaimStrings(setting.JWT.Audience),
-				ExpiresAt: jwt.NewNumericDate(now.Add(-1 * time.Hour)), // Expired 1 hour ago
-				NotBefore: jwt.NewNumericDate(now.Add(-2 * time.Hour)),
-				IssuedAt:  jwt.NewNumericDate(now.Add(-2 * time.Hour)),
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		tokenString, err := token.SignedString([]byte(setting.JWT.Secret))
-		assert.NoError(t, err)
-
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tokenString)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.Nil(t, authUser)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "expired")
-	})
-
-	t.Run("Invalid Issuer", func(t *testing.T) {
-		user, err := user_model.GetUserByID(unittest.DefaultContext, 1)
-		assert.NoError(t, err)
-
-		now := time.Now()
-		claims := &JWTClaims{
-			UserID:   user.ID,
-			Username: user.Name,
-			RegisteredClaims: jwt.RegisteredClaims{
-				Issuer:    "wrong-issuer",
-				Audience:  jwt.ClaimStrings(setting.JWT.Audience),
-				ExpiresAt: jwt.NewNumericDate(now.Add(1 * time.Hour)),
-				NotBefore: jwt.NewNumericDate(now),
-				IssuedAt:  jwt.NewNumericDate(now),
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		tokenString, err := token.SignedString([]byte(setting.JWT.Secret))
-		assert.NoError(t, err)
-
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tokenString)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.Nil(t, authUser)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "issuer")
-	})
-
-	t.Run("Invalid Audience", func(t *testing.T) {
-		user, err := user_model.GetUserByID(unittest.DefaultContext, 1)
-		assert.NoError(t, err)
-
-		now := time.Now()
-		claims := &JWTClaims{
-			UserID:   user.ID,
-			Username: user.Name,
-			RegisteredClaims: jwt.RegisteredClaims{
-				Issuer:    setting.JWT.Issuer,
-				Audience:  jwt.ClaimStrings([]string{"wrong-audience"}),
-				ExpiresAt: jwt.NewNumericDate(now.Add(1 * time.Hour)),
-				NotBefore: jwt.NewNumericDate(now),
-				IssuedAt:  jwt.NewNumericDate(now),
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		tokenString, err := token.SignedString([]byte(setting.JWT.Secret))
-		assert.NoError(t, err)
-
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tokenString)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.Nil(t, authUser)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "audience")
-	})
-
-	t.Run("Wrong Signing Key", func(t *testing.T) {
-		user, err := user_model.GetUserByID(unittest.DefaultContext, 1)
-		assert.NoError(t, err)
-
-		now := time.Now()
-		claims := &JWTClaims{
-			UserID:   user.ID,
-			Username: user.Name,
-			RegisteredClaims: jwt.RegisteredClaims{
-				Issuer:    setting.JWT.Issuer,
-				Audience:  jwt.ClaimStrings(setting.JWT.Audience),
-				ExpiresAt: jwt.NewNumericDate(now.Add(1 * time.Hour)),
-				NotBefore: jwt.NewNumericDate(now),
-				IssuedAt:  jwt.NewNumericDate(now),
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		tokenString, err := token.SignedString([]byte("wrong-secret-key"))
-		assert.NoError(t, err)
-
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tokenString)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.Nil(t, authUser)
-		assert.Error(t, err)
-	})
-
-	t.Run("Non-existent User", func(t *testing.T) {
-		now := time.Now()
-		claims := &JWTClaims{
-			UserID:   999999, // Non-existent user
-			Username: "nonexistent",
-			RegisteredClaims: jwt.RegisteredClaims{
-				Issuer:    setting.JWT.Issuer,
-				Audience:  jwt.ClaimStrings(setting.JWT.Audience),
-				ExpiresAt: jwt.NewNumericDate(now.Add(1 * time.Hour)),
-				NotBefore: jwt.NewNumericDate(now),
-				IssuedAt:  jwt.NewNumericDate(now),
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		tokenString, err := token.SignedString([]byte(setting.JWT.Secret))
-		assert.NoError(t, err)
-
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tokenString)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.Nil(t, authUser)
-		assert.Error(t, err)
-		assert.True(t, user_model.IsErrUserNotExist(err))
-	})
-
-	t.Run("Username Mismatch", func(t *testing.T) {
-		user, err := user_model.GetUserByID(unittest.DefaultContext, 1)
-		assert.NoError(t, err)
-
-		now := time.Now()
-		claims := &JWTClaims{
-			UserID:   user.ID,
-			Username: "wrong-username",
-			RegisteredClaims: jwt.RegisteredClaims{
-				Issuer:    setting.JWT.Issuer,
-				Audience:  jwt.ClaimStrings(setting.JWT.Audience),
-				ExpiresAt: jwt.NewNumericDate(now.Add(1 * time.Hour)),
-				NotBefore: jwt.NewNumericDate(now),
-				IssuedAt:  jwt.NewNumericDate(now),
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		tokenString, err := token.SignedString([]byte(setting.JWT.Secret))
-		assert.NoError(t, err)
-
-		req := httptest.NewRequest("GET", "/api/v1/user", nil)
-		req.Header.Set("Authorization", "Bearer "+tokenString)
-		w := httptest.NewRecorder()
-		ds := make(reqctx.ContextData)
-
-		jwtAuth := &JWT{}
-		authUser, err := jwtAuth.Verify(req, w, ds, nil)
-
-		assert.Nil(t, authUser)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "mismatch")
-	})
-}
-
-func TestGenerateJWTToken(t *testing.T) {
-	// Save original settings
-	origEnabled := setting.JWT.Enabled
-	origSecret := setting.JWT.Secret
-	origIssuer := setting.JWT.Issuer
-	origAudience := setting.JWT.Audience
-	origAlgorithm := setting.JWT.SigningAlgorithm
-	origExpiration := setting.JWT.ExpirationTime
-
-	// Restore original settings after test
-	defer func() {
-		setting.JWT.Enabled = origEnabled
-		setting.JWT.Secret = origSecret
-		setting.JWT.Issuer = origIssuer
-		setting.JWT.Audience = origAudience
-		setting.JWT.SigningAlgorithm = origAlgorithm
-		setting.JWT.ExpirationTime = origExpiration
-	}()
-
-	t.Run("JWT Disabled", func(t *testing.T) {
-		setting.JWT.Enabled = false
-
-		token, err := GenerateJWTToken(1, "testuser")
-		assert.Error(t, err)
-		assert.Empty(t, token)
-		assert.Contains(t, err.Error(), "not enabled")
-	})
-
-	t.Run("No Secret Configured", func(t *testing.T) {
+	t.Run("Custom Header Name", func(t *testing.T) {
 		setting.JWT.Enabled = true
-		setting.JWT.Secret = ""
+		setting.JWT.HeaderName = "X-JWT-Token"
+		setting.JWT.JWKSURL = "https://example.com/jwks"
 
-		token, err := GenerateJWTToken(1, "testuser")
+		req := httptest.NewRequest("GET", "/api/v1/user", nil)
+		req.Header.Set("X-JWT-Token", "token.value.here")
+		w := httptest.NewRecorder()
+		ds := make(reqctx.ContextData)
+
+		jwtAuth := &JWT{}
+		// This will fail validation but demonstrates header extraction
+		user, err := jwtAuth.Verify(req, w, ds, nil)
+
+		// Token extraction works, but validation fails (expected)
+		assert.Nil(t, user)
+		// Error is expected since we can't validate without proper JWKS
 		assert.Error(t, err)
-		assert.Empty(t, token)
-		assert.Contains(t, err.Error(), "secret is not configured")
-	})
-
-	t.Run("HS256 Algorithm", func(t *testing.T) {
-		setting.JWT.Enabled = true
-		setting.JWT.Secret = "test-secret"
-		setting.JWT.Issuer = "gitea-test"
-		setting.JWT.Audience = []string{"gitea-test"}
-		setting.JWT.SigningAlgorithm = "HS256"
-		setting.JWT.ExpirationTime = 3600
-
-		token, err := GenerateJWTToken(1, "testuser")
-		assert.NoError(t, err)
-		assert.NotEmpty(t, token)
-
-		// Verify the token can be parsed
-		parsedToken, err := jwt.ParseWithClaims(token, &JWTClaims{}, func(token *jwt.Token) (interface{}, error) {
-			return []byte(setting.JWT.Secret), nil
-		})
-		assert.NoError(t, err)
-		assert.True(t, parsedToken.Valid)
-
-		claims, ok := parsedToken.Claims.(*JWTClaims)
-		assert.True(t, ok)
-		assert.Equal(t, int64(1), claims.UserID)
-		assert.Equal(t, "testuser", claims.Username)
-		assert.Equal(t, setting.JWT.Issuer, claims.Issuer)
-	})
-
-	t.Run("HS384 Algorithm", func(t *testing.T) {
-		setting.JWT.Enabled = true
-		setting.JWT.Secret = "test-secret"
-		setting.JWT.SigningAlgorithm = "HS384"
-
-		token, err := GenerateJWTToken(1, "testuser")
-		assert.NoError(t, err)
-		assert.NotEmpty(t, token)
-	})
-
-	t.Run("HS512 Algorithm", func(t *testing.T) {
-		setting.JWT.Enabled = true
-		setting.JWT.Secret = "test-secret"
-		setting.JWT.SigningAlgorithm = "HS512"
-
-		token, err := GenerateJWTToken(1, "testuser")
-		assert.NoError(t, err)
-		assert.NotEmpty(t, token)
-	})
-
-	t.Run("Unsupported Algorithm", func(t *testing.T) {
-		setting.JWT.Enabled = true
-		setting.JWT.Secret = "test-secret"
-		setting.JWT.SigningAlgorithm = "RS256"
-
-		token, err := GenerateJWTToken(1, "testuser")
-		assert.Error(t, err)
-		assert.Empty(t, token)
-		assert.Contains(t, err.Error(), "unsupported")
 	})
 }
 
 func TestJWTName(t *testing.T) {
 	jwtAuth := &JWT{}
 	assert.Equal(t, "jwt", jwtAuth.Name())
+}
+
+func TestExtractClaimValue(t *testing.T) {
+	claims := jwt.MapClaims{
+		"username": "john.doe",
+		"email":    "john@example.com",
+		"user": map[string]interface{}{
+			"id":   "12345",
+			"name": "John Doe",
+			"roles": []interface{}{
+				"admin",
+				"developer",
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		claimPath string
+		expected  interface{}
+		found     bool
+	}{
+		{
+			name:      "Simple claim",
+			claimPath: "username",
+			expected:  "john.doe",
+			found:     true,
+		},
+		{
+			name:      "Nested claim",
+			claimPath: "user.name",
+			expected:  "John Doe",
+			found:     true,
+		},
+		{
+			name:      "Deep nested claim",
+			claimPath: "user.id",
+			expected:  "12345",
+			found:     true,
+		},
+		{
+			name:      "Non-existent claim",
+			claimPath: "non.existent",
+			expected:  nil,
+			found:     false,
+		},
+		{
+			name:      "Array claim",
+			claimPath: "user.roles",
+			expected:  []interface{}{"admin", "developer"},
+			found:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value, found := extractClaimValue(claims, tt.claimPath)
+			assert.Equal(t, tt.found, found)
+			if found {
+				assert.Equal(t, tt.expected, value)
+			}
+		})
+	}
+}
+
+func TestExtractUsername(t *testing.T) {
+	// Save original setting
+	origUsernameClaim := setting.JWT.UsernameClaim
+	defer func() {
+		setting.JWT.UsernameClaim = origUsernameClaim
+	}()
+
+	tests := []struct {
+		name          string
+		claims        jwt.MapClaims
+		usernameClaim string
+		expected      string
+		expectError   bool
+	}{
+		{
+			name: "Username from preferred_username",
+			claims: jwt.MapClaims{
+				"preferred_username": "john.doe",
+			},
+			usernameClaim: "preferred_username",
+			expected:      "john.doe",
+			expectError:   false,
+		},
+		{
+			name: "Username from sub",
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			usernameClaim: "sub",
+			expected:      "user123",
+			expectError:   false,
+		},
+		{
+			name: "Username from email",
+			claims: jwt.MapClaims{
+				"email": "john@example.com",
+			},
+			usernameClaim: "email",
+			expected:      "john@example.com",
+			expectError:   false,
+		},
+		{
+			name: "Username from nested claim",
+			claims: jwt.MapClaims{
+				"user": map[string]interface{}{
+					"name": "john.doe",
+				},
+			},
+			usernameClaim: "user.name",
+			expected:      "john.doe",
+			expectError:   false,
+		},
+		{
+			name: "Fallback to sub when configured claim missing",
+			claims: jwt.MapClaims{
+				"sub": "user123",
+			},
+			usernameClaim: "preferred_username",
+			expected:      "user123",
+			expectError:   false,
+		},
+		{
+			name:          "No username claim found",
+			claims:        jwt.MapClaims{},
+			usernameClaim: "preferred_username",
+			expected:      "",
+			expectError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setting.JWT.UsernameClaim = tt.usernameClaim
+
+			username, err := extractUsername(tt.claims)
+			
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expected, username)
+			}
+		})
+	}
+}
+
+func TestExtractRoles(t *testing.T) {
+	// Save original setting
+	origRolesClaim := setting.JWT.RolesClaim
+	defer func() {
+		setting.JWT.RolesClaim = origRolesClaim
+	}()
+
+	tests := []struct {
+		name       string
+		claims     jwt.MapClaims
+		rolesClaim string
+		expected   []string
+	}{
+		{
+			name: "Roles as array",
+			claims: jwt.MapClaims{
+				"roles": []interface{}{"admin", "developer"},
+			},
+			rolesClaim: "roles",
+			expected:   []string{"admin", "developer"},
+		},
+		{
+			name: "Roles as comma-separated string",
+			claims: jwt.MapClaims{
+				"roles": "admin,developer,user",
+			},
+			rolesClaim: "roles",
+			expected:   []string{"admin", "developer", "user"},
+		},
+		{
+			name: "Roles as single string",
+			claims: jwt.MapClaims{
+				"roles": "admin",
+			},
+			rolesClaim: "roles",
+			expected:   []string{"admin"},
+		},
+		{
+			name: "Roles from nested claim",
+			claims: jwt.MapClaims{
+				"user": map[string]interface{}{
+					"groups": []interface{}{"developers", "admins"},
+				},
+			},
+			rolesClaim: "user.groups",
+			expected:   []string{"developers", "admins"},
+		},
+		{
+			name:       "No roles claim",
+			claims:     jwt.MapClaims{},
+			rolesClaim: "roles",
+			expected:   []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setting.JWT.RolesClaim = tt.rolesClaim
+
+			roles := extractRoles(tt.claims)
+			assert.Equal(t, tt.expected, roles)
+		})
+	}
 }
