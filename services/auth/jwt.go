@@ -381,8 +381,9 @@ func syncUserTeamMemberships(ctx context.Context, user *user_model.User, jwtRole
 				log.Info("Added user %s to team %s based on JWT role", user.Name, team.Name)
 			}
 		} else if !shouldBeInTeam && isInTeam && !team.IsOwnerTeam() {
-			// Optional: Remove user from teams they shouldn't be in
-			// Commented out by default to be less destructive
+			// TODO: Optional feature to remove user from teams they shouldn't be in
+			// This is commented out by default to be less destructive and avoid
+			// accidentally removing manual team assignments.
 			// if err := org_service.RemoveTeamMember(ctx, team, user); err != nil {
 			//     log.Error("Failed to remove user %s from team %s: %v", user.Name, team.Name, err)
 			// }

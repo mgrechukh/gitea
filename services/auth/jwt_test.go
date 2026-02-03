@@ -528,3 +528,44 @@ err := syncUserTeamMemberships(t.Context(), user, []string{"unknown-role"})
 assert.NoError(t, err)
 })
 }
+
+func TestAutoCreateJWTUserWithRoles(t *testing.T) {
+assert.NoError(t, unittest.PrepareTestDatabase())
+
+// Save original settings
+origDefaultEmail := setting.JWT.DefaultEmail
+origDefaultIsActive := setting.JWT.DefaultIsActive
+origDefaultIsAdmin := setting.JWT.DefaultIsAdmin
+origEmailClaim := setting.JWT.EmailClaim
+origFullNameClaim := setting.JWT.FullNameClaim
+
+defer func() {
+setting.JWT.DefaultEmail = origDefaultEmail
+setting.JWT.DefaultIsActive = origDefaultIsActive
+setting.JWT.DefaultIsAdmin = origDefaultIsAdmin
+setting.JWT.EmailClaim = origEmailClaim
+setting.JWT.FullNameClaim = origFullNameClaim
+}()
+
+setting.JWT.DefaultEmail = "@test.local"
+setting.JWT.DefaultIsActive = true
+setting.JWT.DefaultIsAdmin = false
+setting.JWT.EmailClaim = "email"
+setting.JWT.FullNameClaim = "name"
+
+t.Run("Create user with roles", func(t *testing.T) {
+claims := jwt.MapClaims{
+"email": "withroles@example.com",
+"name":  "User With Roles",
+}
+
+user, err := autoCreateJWTUser(t.Context(), claims, "newuser4", []string{"admin", "developer"})
+assert.NoError(t, err)
+assert.NotNil(t, user)
+assert.Equal(t, "newuser4", user.Name)
+assert.Equal(t, "withroles@example.com", user.Email)
+assert.Equal(t, "User With Roles", user.FullName)
+// Note: The roles themselves are not stored in the user object,
+// but are used for team membership synchronization
+})
+}
