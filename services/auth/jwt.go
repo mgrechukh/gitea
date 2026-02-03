@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,10 +12,13 @@ import (
 	"sync"
 	"time"
 
+	auth_model "code.gitea.io/gitea/models/auth"
+	"code.gitea.io/gitea/models/organization"
 	user_model "code.gitea.io/gitea/models/user"
 	jwtutil "code.gitea.io/gitea/modules/auth/jwt"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/setting"
+	org_service "code.gitea.io/gitea/services/org"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -267,6 +271,127 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 	return claims, nil
 }
 
+// extractEmail extracts email from JWT claims
+func extractEmail(claims jwt.MapClaims) string {
+	if val, ok := extractClaimValue(claims, setting.JWT.EmailClaim); ok {
+		if email, ok := val.(string); ok && email != "" {
+			return email
+		}
+	}
+	if email, ok := claims["email"].(string); ok {
+		return email
+	}
+	return ""
+}
+
+// extractFullName extracts full name from JWT claims
+func extractFullName(claims jwt.MapClaims) string {
+	if val, ok := extractClaimValue(claims, setting.JWT.FullNameClaim); ok {
+		if name, ok := val.(string); ok && name != "" {
+			return name
+		}
+	}
+	if name, ok := claims["name"].(string); ok {
+		return name
+	}
+	return ""
+}
+
+// autoCreateJWTUser creates a new user based on JWT claims
+func autoCreateJWTUser(ctx context.Context, claims jwt.MapClaims, username string, roles []string) (*user_model.User, error) {
+	// Extract email from claims or use default
+	email := extractEmail(claims)
+	if email == "" {
+		email = username + setting.JWT.DefaultEmail
+	}
+
+	// Extract full name from claims
+	fullName := extractFullName(claims)
+	if fullName == "" {
+		fullName = username
+	}
+
+	// Create user object
+	user := &user_model.User{
+		Name:               username,
+		Email:              email,
+		FullName:           fullName,
+		Passwd:             "",  // No password for JWT users
+		IsActive:           setting.JWT.DefaultIsActive,
+		IsAdmin:            setting.JWT.DefaultIsAdmin,
+		LoginType:          auth_model.OAuth2, // Use OAuth2 login type for now
+		LoginSource:        0,
+		LoginName:          username,
+		MustChangePassword: false,
+	}
+
+	// Create the user in the database
+	if err := user_model.CreateUser(ctx, user, &user_model.Meta{}); err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	// Add user to default organization if configured
+	if setting.JWT.DefaultOrgID > 0 {
+		if err := organization.AddOrgUser(ctx, setting.JWT.DefaultOrgID, user.ID); err != nil {
+			log.Error("Failed to add user %s to default organization: %v", username, err)
+		}
+	}
+
+	return user, nil
+}
+
+// syncUserTeamMemberships synchronizes user team memberships based on JWT roles
+func syncUserTeamMemberships(ctx context.Context, user *user_model.User, jwtRoles []string) error {
+	if setting.JWT.DefaultOrgID == 0 {
+		return nil // No organization configured
+	}
+
+	// Build a set of teams the user should be in based on JWT roles
+	desiredTeams := make(map[string]bool)
+	for _, role := range jwtRoles {
+		if teams, ok := setting.JWT.RoleToTeamMapping[role]; ok {
+			for _, team := range teams {
+				desiredTeams[strings.ToLower(team)] = true
+			}
+		}
+	}
+
+	if len(desiredTeams) == 0 {
+		return nil // No team mappings configured
+	}
+
+	// Get all teams in the organization
+	orgTeams, _, err := organization.SearchTeam(ctx, &organization.SearchTeamOptions{
+		OrgID: setting.JWT.DefaultOrgID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get organization teams: %w", err)
+	}
+
+	// Add user to teams based on role mapping
+	for _, team := range orgTeams {
+		shouldBeInTeam := desiredTeams[strings.ToLower(team.Name)]
+		isInTeam := team.IsMember(ctx, user.ID)
+
+		if shouldBeInTeam && !isInTeam {
+			// Add user to team
+			if err := org_service.AddTeamMember(ctx, team, user); err != nil {
+				log.Error("Failed to add user %s to team %s: %v", user.Name, team.Name, err)
+			} else {
+				log.Info("Added user %s to team %s based on JWT role", user.Name, team.Name)
+			}
+		} else if !shouldBeInTeam && isInTeam && !team.IsOwnerTeam() {
+			// Optional: Remove user from teams they shouldn't be in
+			// Commented out by default to be less destructive
+			// if err := org_service.RemoveTeamMember(ctx, team, user); err != nil {
+			//     log.Error("Failed to remove user %s from team %s: %v", user.Name, team.Name, err)
+			// }
+		}
+	}
+
+	return nil
+}
+
 // Verify extracts the user from the JWT token and returns the corresponding user object.
 // Returns nil if verification fails.
 func (j *JWT) Verify(req *http.Request, w http.ResponseWriter, store DataStore, sess SessionStore) (*user_model.User, error) {
@@ -307,20 +432,38 @@ func (j *JWT) Verify(req *http.Request, w http.ResponseWriter, store DataStore, 
 	user, err := user_model.GetUserByName(req.Context(), username)
 	if err != nil {
 		if user_model.IsErrUserNotExist(err) {
-			// Use generic error message to avoid user enumeration
-			log.Error("JWT Authentication: User lookup failed")
-			return nil, user_model.ErrUserNotExist{Name: username}
+			// Auto-registration if enabled
+			if setting.JWT.AutoRegister {
+				user, err = autoCreateJWTUser(req.Context(), claims, username, roles)
+				if err != nil {
+					log.Error("JWT Authentication: Failed to auto-create user %s: %v", username, err)
+					return nil, fmt.Errorf("failed to create user: %w", err)
+				}
+				log.Info("JWT Authentication: Auto-created user %s (ID: %d)", user.Name, user.ID)
+			} else {
+				log.Error("JWT Authentication: User %s does not exist and auto-registration is disabled", username)
+				return nil, user_model.ErrUserNotExist{Name: username}
+			}
+		} else {
+			log.Error("JWT Authentication: Failed to get user: %v", err)
+			return nil, err
 		}
-		log.Error("JWT Authentication: Failed to get user: %v", err)
-		return nil, err
+	}
+
+	// Sync team memberships based on roles (both for new and existing users)
+	if setting.JWT.AutoRegister && len(roles) > 0 && setting.JWT.DefaultOrgID > 0 {
+		if err := syncUserTeamMemberships(req.Context(), user, roles); err != nil {
+			log.Warn("JWT Authentication: Failed to sync team memberships for user %s: %v", user.Name, err)
+			// Don't fail authentication, just log the warning
+		}
 	}
 
 	log.Trace("JWT Authentication: Authenticated user %s (ID: %d) with roles: %v", user.Name, user.ID, roles)
-	
+
 	// Store authentication metadata
 	store.GetData()["IsJWTAuth"] = true
 	store.GetData()["JWTUsername"] = username
 	store.GetData()["JWTRoles"] = roles
-	
+
 	return user, nil
 }

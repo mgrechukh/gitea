@@ -4,6 +4,8 @@
 package setting
 
 import (
+	"encoding/json"
+
 	"code.gitea.io/gitea/modules/log"
 )
 
@@ -20,6 +22,16 @@ var JWT = struct {
 	RolesClaim         string   // JWT claim containing user roles (e.g., "roles", "groups")
 	JWKSCacheTTL       int64    // JWKS cache TTL in seconds (default: 3600)
 	JWKSHTTPTimeout    int      // JWKS HTTP request timeout in seconds (default: 10)
+	
+	// Auto-provisioning settings
+	AutoRegister      bool                // Enable automatic user creation
+	DefaultOrgID      int64               // Organization ID for auto-created users
+	RoleToTeamMapping map[string][]string // Map JWT roles to Gitea team names
+	DefaultEmail      string              // Default email domain if not in JWT
+	DefaultIsActive   bool                // Whether auto-created users are active
+	DefaultIsAdmin    bool                // Whether auto-created users are admins
+	EmailClaim        string              // JWT claim for email (default: "email")
+	FullNameClaim     string              // JWT claim for full name (default: "name")
 }{
 	Enabled:            false,
 	HeaderName:         "Authorization", // Default to Authorization header
@@ -32,6 +44,16 @@ var JWT = struct {
 	RolesClaim:         "roles",
 	JWKSCacheTTL:       3600,  // 1 hour default
 	JWKSHTTPTimeout:    10,    // 10 seconds default
+	
+	// Auto-provisioning defaults
+	AutoRegister:      false,
+	DefaultOrgID:      0,
+	RoleToTeamMapping: make(map[string][]string),
+	DefaultEmail:      "@gitea.local",
+	DefaultIsActive:   true,
+	DefaultIsAdmin:    false,
+	EmailClaim:        "email",
+	FullNameClaim:     "name",
 }
 
 func loadJWTFrom(rootCfg ConfigProvider) {
@@ -82,4 +104,28 @@ func loadJWTFrom(rootCfg ConfigProvider) {
 	log.Info("[jwt] JWT header name: %s", JWT.HeaderName)
 	log.Info("[jwt] Username claim: %s, Roles claim: %s", JWT.UsernameClaim, JWT.RolesClaim)
 	log.Info("[jwt] JWKS cache TTL: %d seconds, HTTP timeout: %d seconds", JWT.JWKSCacheTTL, JWT.JWKSHTTPTimeout)
+	
+	// Auto-provisioning settings
+	JWT.AutoRegister = sec.Key("AUTO_REGISTER").MustBool(false)
+	JWT.DefaultOrgID = sec.Key("DEFAULT_ORG_ID").MustInt64(0)
+	JWT.DefaultIsActive = sec.Key("DEFAULT_IS_ACTIVE").MustBool(true)
+	JWT.DefaultIsAdmin = sec.Key("DEFAULT_IS_ADMIN").MustBool(false)
+	JWT.EmailClaim = sec.Key("EMAIL_CLAIM").MustString("email")
+	JWT.FullNameClaim = sec.Key("FULL_NAME_CLAIM").MustString("name")
+	JWT.DefaultEmail = sec.Key("DEFAULT_EMAIL").MustString("@gitea.local")
+	
+	// Parse role to team mapping (JSON format)
+	mappingJSON := sec.Key("ROLE_TO_TEAM_MAPPING").MustString("{}")
+	if err := json.Unmarshal([]byte(mappingJSON), &JWT.RoleToTeamMapping); err != nil {
+		log.Warn("[jwt] Failed to parse ROLE_TO_TEAM_MAPPING: %v", err)
+		JWT.RoleToTeamMapping = make(map[string][]string)
+	}
+	
+	if JWT.AutoRegister {
+		log.Info("[jwt] Auto-registration enabled")
+		if JWT.DefaultOrgID > 0 {
+			log.Info("[jwt] Default organization ID: %d", JWT.DefaultOrgID)
+			log.Info("[jwt] Role to team mappings: %d configured", len(JWT.RoleToTeamMapping))
+		}
+	}
 }

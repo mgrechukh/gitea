@@ -315,3 +315,216 @@ func TestExtractRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractEmail(t *testing.T) {
+// Save original setting
+origEmailClaim := setting.JWT.EmailClaim
+defer func() {
+setting.JWT.EmailClaim = origEmailClaim
+}()
+
+tests := []struct {
+name       string
+claims     jwt.MapClaims
+emailClaim string
+expected   string
+}{
+{
+name: "Email from standard claim",
+claims: jwt.MapClaims{
+"email": "user@example.com",
+},
+emailClaim: "email",
+expected:   "user@example.com",
+},
+{
+name: "Email from custom claim",
+claims: jwt.MapClaims{
+"user_email": "custom@example.com",
+},
+emailClaim: "user_email",
+expected:   "custom@example.com",
+},
+{
+name: "Email from nested claim",
+claims: jwt.MapClaims{
+"user": map[string]interface{}{
+"email": "nested@example.com",
+},
+},
+emailClaim: "user.email",
+expected:   "nested@example.com",
+},
+{
+name:       "No email claim",
+claims:     jwt.MapClaims{},
+emailClaim: "email",
+expected:   "",
+},
+}
+
+for _, tt := range tests {
+t.Run(tt.name, func(t *testing.T) {
+setting.JWT.EmailClaim = tt.emailClaim
+
+email := extractEmail(tt.claims)
+assert.Equal(t, tt.expected, email)
+})
+}
+}
+
+func TestExtractFullName(t *testing.T) {
+// Save original setting
+origFullNameClaim := setting.JWT.FullNameClaim
+defer func() {
+setting.JWT.FullNameClaim = origFullNameClaim
+}()
+
+tests := []struct {
+name          string
+claims        jwt.MapClaims
+fullNameClaim string
+expected      string
+}{
+{
+name: "Full name from standard claim",
+claims: jwt.MapClaims{
+"name": "John Doe",
+},
+fullNameClaim: "name",
+expected:      "John Doe",
+},
+{
+name: "Full name from custom claim",
+claims: jwt.MapClaims{
+"display_name": "Jane Smith",
+},
+fullNameClaim: "display_name",
+expected:      "Jane Smith",
+},
+{
+name: "Full name from nested claim",
+claims: jwt.MapClaims{
+"user": map[string]interface{}{
+"full_name": "Bob Johnson",
+},
+},
+fullNameClaim: "user.full_name",
+expected:      "Bob Johnson",
+},
+{
+name:          "No full name claim",
+claims:        jwt.MapClaims{},
+fullNameClaim: "name",
+expected:      "",
+},
+}
+
+for _, tt := range tests {
+t.Run(tt.name, func(t *testing.T) {
+setting.JWT.FullNameClaim = tt.fullNameClaim
+
+fullName := extractFullName(tt.claims)
+assert.Equal(t, tt.expected, fullName)
+})
+}
+}
+
+func TestAutoCreateJWTUser(t *testing.T) {
+assert.NoError(t, unittest.PrepareTestDatabase())
+
+// Save original settings
+origDefaultEmail := setting.JWT.DefaultEmail
+origDefaultIsActive := setting.JWT.DefaultIsActive
+origDefaultIsAdmin := setting.JWT.DefaultIsAdmin
+origEmailClaim := setting.JWT.EmailClaim
+origFullNameClaim := setting.JWT.FullNameClaim
+
+defer func() {
+setting.JWT.DefaultEmail = origDefaultEmail
+setting.JWT.DefaultIsActive = origDefaultIsActive
+setting.JWT.DefaultIsAdmin = origDefaultIsAdmin
+setting.JWT.EmailClaim = origEmailClaim
+setting.JWT.FullNameClaim = origFullNameClaim
+}()
+
+setting.JWT.DefaultEmail = "@test.local"
+setting.JWT.DefaultIsActive = true
+setting.JWT.DefaultIsAdmin = false
+setting.JWT.EmailClaim = "email"
+setting.JWT.FullNameClaim = "name"
+
+t.Run("Create user with email and name from claims", func(t *testing.T) {
+claims := jwt.MapClaims{
+"email": "newuser@example.com",
+"name":  "New User",
+}
+
+user, err := autoCreateJWTUser(t.Context(), claims, "newuser1", []string{})
+assert.NoError(t, err)
+assert.NotNil(t, user)
+assert.Equal(t, "newuser1", user.Name)
+assert.Equal(t, "newuser@example.com", user.Email)
+assert.Equal(t, "New User", user.FullName)
+assert.True(t, user.IsActive)
+assert.False(t, user.IsAdmin)
+})
+
+t.Run("Create user with default email", func(t *testing.T) {
+claims := jwt.MapClaims{
+"name": "Another User",
+}
+
+user, err := autoCreateJWTUser(t.Context(), claims, "newuser2", []string{})
+assert.NoError(t, err)
+assert.NotNil(t, user)
+assert.Equal(t, "newuser2", user.Name)
+assert.Equal(t, "newuser2@test.local", user.Email)
+assert.Equal(t, "Another User", user.FullName)
+})
+
+t.Run("Create user with default full name", func(t *testing.T) {
+claims := jwt.MapClaims{
+"email": "noname@example.com",
+}
+
+user, err := autoCreateJWTUser(t.Context(), claims, "newuser3", []string{})
+assert.NoError(t, err)
+assert.NotNil(t, user)
+assert.Equal(t, "newuser3", user.Name)
+assert.Equal(t, "noname@example.com", user.Email)
+assert.Equal(t, "newuser3", user.FullName) // Defaults to username
+})
+}
+
+func TestSyncUserTeamMemberships(t *testing.T) {
+assert.NoError(t, unittest.PrepareTestDatabase())
+
+// Save original settings
+origDefaultOrgID := setting.JWT.DefaultOrgID
+origRoleToTeamMapping := setting.JWT.RoleToTeamMapping
+
+defer func() {
+setting.JWT.DefaultOrgID = origDefaultOrgID
+setting.JWT.RoleToTeamMapping = origRoleToTeamMapping
+}()
+
+t.Run("No organization configured", func(t *testing.T) {
+setting.JWT.DefaultOrgID = 0
+
+// This should not error even with a nil user since it returns early
+err := syncUserTeamMemberships(t.Context(), nil, []string{"admin"})
+assert.NoError(t, err)
+})
+
+t.Run("No role mappings configured", func(t *testing.T) {
+setting.JWT.DefaultOrgID = 1
+setting.JWT.RoleToTeamMapping = make(map[string][]string)
+
+// Create a test user
+user := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+
+err := syncUserTeamMemberships(t.Context(), user, []string{"unknown-role"})
+assert.NoError(t, err)
+})
+}
