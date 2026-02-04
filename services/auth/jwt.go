@@ -197,19 +197,8 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 
 		// Kid is not present, try all keys from JWKS
 		// This is normal behavior for some IdPs like Teleport
-		keys, err := client.GetAllKeys()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get JWKS keys: %w", err)
-		}
-
-		// Try each key until one works
-		// Note: The jwt.Parse function will call this keyfunc and validate the signature
-		// We return the first key and let jwt.Parse try it. If it fails, jwt.Parse will fail.
-		// To properly try all keys, we need a different approach.
-
-		// Actually, we need to try parsing with each key
-		// But jwt.Parse doesn't support that pattern directly
 		// We'll return a special marker error to indicate we should try all keys
+		// The actual key fetching and validation happens in the fallback handler below
 		return nil, errors.New("token missing 'kid' header - will try all keys")
 	})
 
