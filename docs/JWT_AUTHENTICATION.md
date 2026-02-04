@@ -1,11 +1,12 @@
 # JWT Authentication Configuration
 
-Gitea supports JWT (JSON Web Token) authentication for API access. This allows integration with external identity providers (IdP) through reverse proxy authentication patterns.
+Gitea supports JWT (JSON Web Token) authentication for both API access and web UI. This allows integration with external identity providers (IdP) through reverse proxy authentication patterns.
 
 ## Overview
 
 JWT authentication in Gitea:
 - Validates tokens issued by external identity providers
+- Works for both API endpoints and web UI access
 - Uses JWKS (JSON Web Key Set) to fetch and cache public keys
 - Supports configurable HTTP header for receiving JWT tokens
 - Extracts username and roles from configurable JWT claims
@@ -401,9 +402,11 @@ GITEA__jwt__DEFAULT_EMAIL=@gitea.local
 GITEA__jwt__ROLE_TO_TEAM_MAPPING='{"admin": ["Owners"], "developer": ["Developers"]}'
 ```
 
-## API Usage
+## API and Web UI Usage
 
-Once configured, API requests can be authenticated using JWT tokens:
+Once configured, JWT tokens can be used to authenticate both API requests and web UI access:
+
+### API Authentication
 
 ```bash
 # Using Authorization header (default)
@@ -414,6 +417,18 @@ curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
 curl -H "X-JWT-Token: YOUR_JWT_TOKEN" \
   https://gitea.example.com/api/v1/user
 ```
+
+### Web UI Authentication
+
+When accessing the web UI through a browser, the JWT token should be passed via the configured header (typically through a reverse proxy). The reverse proxy adds the JWT token to requests before forwarding them to Gitea.
+
+**Example with reverse proxy:**
+- User accesses `https://gitea.example.com` through the reverse proxy
+- Reverse proxy authenticates the user with your IdP
+- Reverse proxy adds JWT token to the request header
+- Gitea validates the token and grants access to the web UI
+
+This enables seamless single sign-on (SSO) experience where users authenticate once with your IdP and gain access to both the Gitea web interface and API.
 
 ## Integration with Reverse Proxy
 
