@@ -105,6 +105,12 @@ func buildAuthGroup() *auth_service.Group {
 	if setting.Service.EnableReverseProxyAuth {
 		group.Add(&auth_service.ReverseProxy{}) // reverse-proxy should before Session, otherwise the header will be ignored if user has login
 	}
+
+	// Add JWT authentication if enabled
+	if setting.JWT.Enabled {
+		group.Add(&auth_service.JWT{})
+	}
+
 	group.Add(&auth_service.Session{})
 
 	if setting.IsWindows && auth_model.IsSSPIEnabled(graceful.GetManager().ShutdownContext()) {
