@@ -175,35 +175,40 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 		return nil, errors.New("JWKS client not initialized")
 	}
 
-	// Parse and validate the token
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		// Get the key ID from the token header
-		kidInterface, ok := token.Header["kid"]
-		if ok {
-			// Kid is present, use it to fetch the specific key
-			kid, ok := kidInterface.(string)
-			if !ok {
-				return nil, errors.New("invalid 'kid' header type")
-			}
+	// First, do a quick parse to check if kid is present (without validation)
+	// We only look at the header to decide our parsing strategy
+	unverifiedToken, _, err := jwt.NewParser().ParseUnverified(tokenString, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWT token structure: %w", err)
+	}
 
-			// Fetch the public key from JWKS
+	var token *jwt.Token
+	
+	// Check if kid header is present
+	kidInterface, hasKid := unverifiedToken.Header["kid"]
+	
+	if hasKid {
+		// Kid is present, use it to fetch the specific key
+		kid, ok := kidInterface.(string)
+		if !ok {
+			return nil, errors.New("invalid 'kid' header type")
+		}
+
+		// Parse and validate with the specific key
+		token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			key, err := client.GetKey(kid)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get public key: %w", err)
 			}
-
 			return key, nil
+		})
+		
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse JWT token: %w", err)
 		}
-
+	} else {
 		// Kid is not present, try all keys from JWKS
 		// This is normal behavior for some IdPs like Teleport
-		// We'll return a special marker error to indicate we should try all keys
-		// The actual key fetching and validation happens in the fallback handler below
-		return nil, errors.New("token missing 'kid' header - will try all keys")
-	})
-
-	// If we got the special error about missing kid, try all keys
-	if err != nil && strings.Contains(err.Error(), "token missing 'kid' header - will try all keys") {
 		keys, keysErr := client.GetAllKeys()
 		if keysErr != nil {
 			return nil, fmt.Errorf("failed to get JWKS keys: %w", keysErr)
@@ -230,8 +235,6 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 			}
 			return nil, fmt.Errorf("failed to validate token with any key from JWKS: %w", err)
 		}
-	} else if err != nil {
-		return nil, fmt.Errorf("failed to parse JWT token: %w", err)
 	}
 
 	if !token.Valid {
