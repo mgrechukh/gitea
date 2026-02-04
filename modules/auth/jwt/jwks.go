@@ -47,8 +47,8 @@ type JWKSClient struct {
 // NewJWKSClient creates a new JWKS client
 func NewJWKSClient(jwksURL string, cacheTTL time.Duration, httpTimeout time.Duration) *JWKSClient {
 	return &JWKSClient{
-		jwksURL: jwksURL,
-		keys:    make(map[string]interface{}),
+		jwksURL:  jwksURL,
+		keys:     make(map[string]interface{}),
 		cacheTTL: cacheTTL,
 		httpClient: &http.Client{
 			Timeout: httpTimeout,
@@ -74,12 +74,43 @@ func (c *JWKSClient) GetKey(kid string) (interface{}, error) {
 	// Try again after fetching
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	if key, ok := c.keys[kid]; ok {
 		return key, nil
 	}
 
 	return nil, fmt.Errorf("key with kid '%s' not found in JWKS", kid)
+}
+
+// GetAllKeys returns all public keys from JWKS
+// This is used when the JWT token doesn't have a 'kid' header
+func (c *JWKSClient) GetAllKeys() ([]interface{}, error) {
+	// Check if we have cached keys
+	c.mu.RLock()
+	hasCachedKeys := len(c.keys) > 0 && time.Since(c.lastFetch) < c.cacheTTL
+	c.mu.RUnlock()
+
+	// Fetch keys if not in cache or cache expired
+	if !hasCachedKeys {
+		if err := c.fetchKeys(); err != nil {
+			return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
+		}
+	}
+
+	// Return all keys
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	keys := make([]interface{}, 0, len(c.keys))
+	for _, key := range c.keys {
+		keys = append(keys, key)
+	}
+
+	if len(keys) == 0 {
+		return nil, errors.New("no keys available in JWKS")
+	}
+
+	return keys, nil
 }
 
 // fetchKeys fetches and parses the JWKS from the configured URL
@@ -162,7 +193,7 @@ func parseRSAKey(jwk JWK) (*rsa.PublicKey, error) {
 
 	// Convert bytes to big.Int
 	n := new(big.Int).SetBytes(nBytes)
-	
+
 	// Convert exponent bytes to int
 	var e int
 	for _, b := range eBytes {
@@ -194,18 +225,18 @@ func validateRSAPublicKey(key *rsa.PublicKey) error {
 	if key.N.BitLen() < 2048 {
 		return errors.New("key size is too small (minimum 2048 bits)")
 	}
-	
+
 	// Try to marshal and unmarshal to ensure it's valid
 	derBytes, err := x509.MarshalPKIXPublicKey(key)
 	if err != nil {
 		return fmt.Errorf("failed to marshal key: %w", err)
 	}
-	
+
 	_, err = x509.ParsePKIXPublicKey(derBytes)
 	if err != nil {
 		return fmt.Errorf("failed to parse marshaled key: %w", err)
 	}
-	
+
 	return nil
 }
 

@@ -1,11 +1,12 @@
 # JWT Authentication Configuration
 
-Gitea supports JWT (JSON Web Token) authentication for API access. This allows integration with external identity providers (IdP) through reverse proxy authentication patterns.
+Gitea supports JWT (JSON Web Token) authentication for both API access and web UI. This allows integration with external identity providers (IdP) through reverse proxy authentication patterns.
 
 ## Overview
 
 JWT authentication in Gitea:
 - Validates tokens issued by external identity providers
+- Works for both API endpoints and web UI access
 - Uses JWKS (JSON Web Key Set) to fetch and cache public keys
 - Supports configurable HTTP header for receiving JWT tokens
 - Extracts username and roles from configurable JWT claims
@@ -142,6 +143,7 @@ app_service:
 - The JWKS URL is typically `https://your-proxy:3080/.well-known/jwks.json`
 - Username is in the `username` claim (not `sub` or `preferred_username`)
 - Roles are provided in the `roles` claim as an array
+- **Teleport tokens may not include a `kid` header** - this is normal, Gitea will try all JWKS keys
 - Ensure Gitea users exist with usernames matching Teleport users
 - The issuer is your Teleport proxy address
 
@@ -149,8 +151,10 @@ app_service:
 
 1. **Request arrives**: Gitea receives an HTTP request with a JWT token in the configured header
 2. **Token extraction**: The JWT token is extracted from the specified header
-3. **Key fetching**: The token's `kid` (key ID) is used to fetch the corresponding public key from the JWKS URL
-4. **Validation**: The token signature is validated using the public key
+3. **Key fetching**: 
+   - If the token has a `kid` (key ID) in the header: Uses it to fetch the specific public key from JWKS
+   - If the token has no `kid` header: Tries validation with all keys from JWKS until one succeeds
+4. **Validation**: The token signature is validated using the public key(s)
 5. **Claims validation**: Issuer, audience, expiration, and other standard claims are validated
 6. **User lookup**: Username is extracted from the configured claim and the user is looked up in Gitea
 7. **Roles extraction**: Roles/groups are extracted and stored in the request context
@@ -160,12 +164,12 @@ app_service:
 
 The JWT token must:
 - Have a valid signature verifiable with keys from the JWKS URL
-- Include a `kid` (key ID) in the header
+- Optionally include a `kid` (key ID) in the header for faster key lookup
 - Include standard claims: `exp` (expiration), `iat` (issued at), optionally `nbf` (not before)
 - Include the configured username claim (e.g., `preferred_username`, `sub`, `email`)
 - Optionally include the configured roles claim
 
-Example JWT header:
+Example JWT header (with kid):
 ```json
 {
   "alg": "RS256",
@@ -173,6 +177,16 @@ Example JWT header:
   "kid": "key-id-from-jwks"
 }
 ```
+
+Example JWT header (without kid - Teleport style):
+```json
+{
+  "alg": "RS256",
+  "typ": "JWT"
+}
+```
+
+**Note**: Tokens without a `kid` header are supported but may be slightly slower as all JWKS keys must be tried. This is normal behavior for some identity providers like Teleport.
 
 Example JWT payload:
 ```json
@@ -199,11 +213,131 @@ Example JWT payload:
    - Issuer (if not skipped)
    - Audience (if not skipped)
 
-3. **User Mapping**: Users must exist in Gitea. JWT authentication does NOT automatically create users.
+3. **User Mapping**: Users must exist in Gitea before JWT authentication, unless auto-registration is enabled (see Auto-Registration section below).
 
 4. **HTTPS Required**: In production, always use HTTPS for both Gitea and the JWKS URL.
 
 5. **Header Security**: When using custom headers, ensure your reverse proxy strips these headers from external requests.
+
+## Auto-Registration
+
+JWT authentication can automatically create users on their first login, eliminating the need for manual user creation.
+
+### Configuration
+
+Add the following to your `app.ini` file:
+
+```ini
+[jwt]
+# ... existing JWT configuration ...
+
+# Enable automatic user creation on first JWT login
+AUTO_REGISTER = true
+
+# Organization ID to add new users to (optional, 0 to disable)
+DEFAULT_ORG_ID = 1
+
+# Whether auto-created users are active by default
+DEFAULT_IS_ACTIVE = true
+
+# Whether auto-created users are admins by default (use with caution!)
+DEFAULT_IS_ADMIN = false
+
+# JWT claim containing the user's email (default: email)
+EMAIL_CLAIM = email
+
+# JWT claim containing the user's full name (default: name)
+FULL_NAME_CLAIM = name
+
+# Default email domain if email is not in JWT (e.g., @gitea.local)
+DEFAULT_EMAIL = @gitea.local
+
+# Role to team mapping (JSON format)
+# Maps JWT roles to Gitea team names within the default organization
+ROLE_TO_TEAM_MAPPING = {"admin": ["Owners"], "developer": ["Developers"], "viewer": ["Viewers"]}
+```
+
+### How It Works
+
+When auto-registration is enabled:
+
+1. **First Login**: When a user authenticates with a valid JWT token but doesn't exist in Gitea:
+   - A new user is created with information from the JWT claims
+   - Email is extracted from the configured email claim (or defaults to username + DEFAULT_EMAIL)
+   - Full name is extracted from the configured full name claim (or defaults to username)
+   - User is added to the default organization (if configured)
+   - User is added to teams based on JWT role mappings (if configured)
+
+2. **Subsequent Logins**: On each login:
+   - Team memberships are synchronized based on current JWT roles
+   - Users are added to teams they should be in based on their JWT roles
+   - Users are NOT automatically removed from teams (to preserve manual assignments)
+
+### Role-Based Team Membership
+
+The `ROLE_TO_TEAM_MAPPING` setting maps JWT roles to Gitea team names using JSON format:
+
+```ini
+# Single role to single team
+ROLE_TO_TEAM_MAPPING = {"developer": ["Developers"]}
+
+# Multiple roles to multiple teams
+ROLE_TO_TEAM_MAPPING = {"admin": ["Owners"], "developer": ["Developers", "Contributors"], "viewer": ["Viewers"]}
+
+# Complex mappings
+ROLE_TO_TEAM_MAPPING = {
+  "gitea-admin": ["Owners"],
+  "gitea-dev": ["Developers"],
+  "gitea-read": ["Viewers"],
+  "gitea-write": ["Contributors", "Developers"]
+}
+```
+
+**Important Notes:**
+- Team names are case-insensitive
+- Teams must already exist in the configured organization
+- Users are added to teams on each login (roles are synchronized)
+- Users are NOT automatically removed from teams they shouldn't be in
+- The "Owners" team is never automatically removed
+
+### Example: Complete Auto-Registration Setup
+
+```ini
+[jwt]
+ENABLED = true
+JWKS_URL = https://idp.example.com/.well-known/jwks.json
+USERNAME_CLAIM = preferred_username
+ROLES_CLAIM = roles
+
+# Auto-registration settings
+AUTO_REGISTER = true
+DEFAULT_ORG_ID = 1
+DEFAULT_IS_ACTIVE = true
+EMAIL_CLAIM = email
+FULL_NAME_CLAIM = name
+DEFAULT_EMAIL = @gitea.local
+
+# Map JWT roles to Gitea teams
+ROLE_TO_TEAM_MAPPING = {
+  "gitea-admin": ["Owners"],
+  "gitea-developer": ["Developers"],
+  "gitea-viewer": ["Viewers"]
+}
+```
+
+With this configuration:
+- Users with the `gitea-admin` role in their JWT will be added to the "Owners" team
+- Users with the `gitea-developer` role will be added to the "Developers" team
+- Users with the `gitea-viewer` role will be added to the "Viewers" team
+- Users can have multiple roles and will be added to multiple teams accordingly
+
+### Security Considerations for Auto-Registration
+
+1. **Default Admin**: Always keep `DEFAULT_IS_ADMIN = false` unless you trust all users from your IdP
+2. **Email Validation**: Ensure your IdP provides valid email addresses, or configure a sensible DEFAULT_EMAIL
+3. **Role Validation**: Carefully configure role-to-team mappings to avoid giving excessive permissions
+4. **Organization Access**: Consider which organization new users should join (DEFAULT_ORG_ID)
+5. **Active Status**: Set `DEFAULT_IS_ACTIVE = false` if you want to manually approve new users
 
 ## Troubleshooting
 
@@ -212,15 +346,34 @@ Example JWT payload:
 1. Check that `ENABLED = true` in the `[jwt]` section
 2. Verify the JWKS_URL is accessible from your Gitea server
 3. Check Gitea logs for JWT authentication errors
-4. Verify the token contains the `kid` header
+4. If using tokens without `kid` header (e.g., Teleport), ensure your JWKS endpoint returns valid keys
 5. Ensure the user exists in Gitea with the username from the JWT claim
 
 ### User not found error
 
-The username extracted from the JWT token must match an existing Gitea user. You may need to:
+If auto-registration is disabled, the username extracted from the JWT token must match an existing Gitea user. You may need to:
+- Enable auto-registration with `AUTO_REGISTER = true`
 - Create users in Gitea beforehand
 - Configure the correct `USERNAME_CLAIM` to match your user directory
 - Ensure username normalization matches between IdP and Gitea
+
+### Auto-registration not working
+
+If users are not being created automatically:
+1. Verify `AUTO_REGISTER = true` in the `[jwt]` section
+2. Check Gitea logs for user creation errors
+3. Ensure the JWT token contains valid email and name claims (or configure defaults)
+4. Verify the username from JWT is valid for Gitea (alphanumeric, dash, underscore only)
+5. Check if email conflicts with existing users
+
+### Team synchronization not working
+
+If users are not being added to teams:
+1. Verify `DEFAULT_ORG_ID` is set to a valid organization ID
+2. Ensure `ROLE_TO_TEAM_MAPPING` is valid JSON
+3. Check that teams exist in the configured organization
+4. Verify role names in the mapping match roles in JWT tokens (case-sensitive)
+5. Check Gitea logs for team synchronization errors
 
 ### Token validation fails
 
@@ -250,11 +403,23 @@ GITEA__jwt__SKIP_ISSUER_CHECK=false
 GITEA__jwt__SKIP_AUDIENCE_CHECK=false
 GITEA__jwt__USERNAME_CLAIM=preferred_username
 GITEA__jwt__ROLES_CLAIM=roles
+
+# Auto-registration settings
+GITEA__jwt__AUTO_REGISTER=true
+GITEA__jwt__DEFAULT_ORG_ID=1
+GITEA__jwt__DEFAULT_IS_ACTIVE=true
+GITEA__jwt__DEFAULT_IS_ADMIN=false
+GITEA__jwt__EMAIL_CLAIM=email
+GITEA__jwt__FULL_NAME_CLAIM=name
+GITEA__jwt__DEFAULT_EMAIL=@gitea.local
+GITEA__jwt__ROLE_TO_TEAM_MAPPING='{"admin": ["Owners"], "developer": ["Developers"]}'
 ```
 
-## API Usage
+## API and Web UI Usage
 
-Once configured, API requests can be authenticated using JWT tokens:
+Once configured, JWT tokens can be used to authenticate both API requests and web UI access:
+
+### API Authentication
 
 ```bash
 # Using Authorization header (default)
@@ -265,6 +430,18 @@ curl -H "Authorization: Bearer YOUR_JWT_TOKEN" \
 curl -H "X-JWT-Token: YOUR_JWT_TOKEN" \
   https://gitea.example.com/api/v1/user
 ```
+
+### Web UI Authentication
+
+When accessing the web UI through a browser, the JWT token should be passed via the configured header (typically through a reverse proxy). The reverse proxy adds the JWT token to requests before forwarding them to Gitea.
+
+**Example with reverse proxy:**
+- User accesses `https://gitea.example.com` through the reverse proxy
+- Reverse proxy authenticates the user with your IdP
+- Reverse proxy adds JWT token to the request header
+- Gitea validates the token and grants access to the web UI
+
+This enables seamless single sign-on (SSO) experience where users authenticate once with your IdP and gain access to both the Gitea web interface and API.
 
 ## Integration with Reverse Proxy
 

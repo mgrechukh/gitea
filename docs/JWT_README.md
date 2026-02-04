@@ -198,7 +198,7 @@ go test -tags="sqlite sqlite_unlock_notify" ./services/auth -run "TestJWT|TestEx
 1. **HTTPS Required**: Always use HTTPS in production for both Gitea and JWKS URL
 2. **Key Caching**: Public keys cached for 1 hour to reduce IdP load
 3. **Token Validation**: Full validation of signature, expiration, issuer, audience
-4. **User Mapping**: Users must exist in Gitea (no auto-provisioning)
+4. **User Mapping**: Users can be auto-provisioned on first login (optional, see Full Documentation)
 5. **Header Injection**: When using custom headers, ensure reverse proxy strips them from external requests
 6. **Minimum Key Size**: RSA keys must be at least 2048 bits
 
@@ -206,14 +206,20 @@ go test -tags="sqlite sqlite_unlock_notify" ./services/auth -run "TestJWT|TestEx
 
 - **No Token Generation**: This implementation only validates tokens (no token generation)
 - **RSA Only**: Currently supports RSA keys only (RS256/RS384/RS512), not EC keys
-- **No Auto-Provisioning**: Users must be created in Gitea manually
 - **No HMAC Support**: Only supports asymmetric algorithms (JWKS-based validation)
+
+## Recent Additions
+
+✅ **Auto-Provisioning**: Users can now be automatically created on first login  
+✅ **Role-Based Team Assignment**: JWT roles can be mapped to Gitea teams  
+✅ **Team Synchronization**: Team memberships sync on each login  
+✅ **Web UI Support**: JWT authentication works for both API and web interface  
+
+See [Full Documentation](JWT_AUTHENTICATION.md#auto-registration) for details.
 
 ## Future Enhancements
 
 - Support for EC (Elliptic Curve) keys (ES256/ES384/ES512)
-- Automatic user provisioning from JWT claims
-- Role-based access control using extracted roles
 - Token refresh mechanism
 - Multiple JWKS URLs support
 - Custom claim validators
