@@ -143,6 +143,7 @@ app_service:
 - The JWKS URL is typically `https://your-proxy:3080/.well-known/jwks.json`
 - Username is in the `username` claim (not `sub` or `preferred_username`)
 - Roles are provided in the `roles` claim as an array
+- **Teleport tokens may not include a `kid` header** - this is normal, Gitea will try all JWKS keys
 - Ensure Gitea users exist with usernames matching Teleport users
 - The issuer is your Teleport proxy address
 
@@ -150,8 +151,10 @@ app_service:
 
 1. **Request arrives**: Gitea receives an HTTP request with a JWT token in the configured header
 2. **Token extraction**: The JWT token is extracted from the specified header
-3. **Key fetching**: The token's `kid` (key ID) is used to fetch the corresponding public key from the JWKS URL
-4. **Validation**: The token signature is validated using the public key
+3. **Key fetching**: 
+   - If the token has a `kid` (key ID) in the header: Uses it to fetch the specific public key from JWKS
+   - If the token has no `kid` header: Tries validation with all keys from JWKS until one succeeds
+4. **Validation**: The token signature is validated using the public key(s)
 5. **Claims validation**: Issuer, audience, expiration, and other standard claims are validated
 6. **User lookup**: Username is extracted from the configured claim and the user is looked up in Gitea
 7. **Roles extraction**: Roles/groups are extracted and stored in the request context
@@ -161,12 +164,12 @@ app_service:
 
 The JWT token must:
 - Have a valid signature verifiable with keys from the JWKS URL
-- Include a `kid` (key ID) in the header
+- Optionally include a `kid` (key ID) in the header for faster key lookup
 - Include standard claims: `exp` (expiration), `iat` (issued at), optionally `nbf` (not before)
 - Include the configured username claim (e.g., `preferred_username`, `sub`, `email`)
 - Optionally include the configured roles claim
 
-Example JWT header:
+Example JWT header (with kid):
 ```json
 {
   "alg": "RS256",
@@ -174,6 +177,16 @@ Example JWT header:
   "kid": "key-id-from-jwks"
 }
 ```
+
+Example JWT header (without kid - Teleport style):
+```json
+{
+  "alg": "RS256",
+  "typ": "JWT"
+}
+```
+
+**Note**: Tokens without a `kid` header are supported but may be slightly slower as all JWKS keys must be tried. This is normal behavior for some identity providers like Teleport.
 
 Example JWT payload:
 ```json
@@ -333,7 +346,7 @@ With this configuration:
 1. Check that `ENABLED = true` in the `[jwt]` section
 2. Verify the JWKS_URL is accessible from your Gitea server
 3. Check Gitea logs for JWT authentication errors
-4. Verify the token contains the `kid` header
+4. If using tokens without `kid` header (e.g., Teleport), ensure your JWKS endpoint returns valid keys
 5. Ensure the user exists in Gitea with the username from the JWT claim
 
 ### User not found error

@@ -47,13 +47,13 @@ func getJWKSClient() *jwtutil.JWKSClient {
 	if setting.JWT.JWKSURL == "" {
 		return nil
 	}
-	
+
 	jwksClientOnce.Do(func() {
 		cacheTTL := time.Duration(setting.JWT.JWKSCacheTTL) * time.Second
 		httpTimeout := time.Duration(setting.JWT.JWKSHTTPTimeout) * time.Second
 		jwksClient = jwtutil.NewJWKSClient(setting.JWT.JWKSURL, cacheTTL, httpTimeout)
 	})
-	
+
 	return jwksClient
 }
 
@@ -61,7 +61,7 @@ func getJWKSClient() *jwtutil.JWKSClient {
 func parseJWTToken(req *http.Request) (string, bool) {
 	headerName := setting.JWT.HeaderName
 	headerValue := req.Header.Get(headerName)
-	
+
 	if headerValue == "" {
 		return "", false
 	}
@@ -76,7 +76,7 @@ func parseJWTToken(req *http.Request) (string, bool) {
 			return strings.TrimPrefix(headerValue, "bearer "), true
 		}
 	}
-	
+
 	// For other headers, use the value as-is
 	return headerValue, true
 }
@@ -85,7 +85,7 @@ func parseJWTToken(req *http.Request) (string, bool) {
 func extractClaimValue(claims jwt.MapClaims, claimPath string) (interface{}, bool) {
 	// Split by dots to support nested claims like "user.username"
 	parts := strings.Split(claimPath, ".")
-	
+
 	var current interface{} = claims
 	for _, part := range parts {
 		switch v := current.(type) {
@@ -105,7 +105,7 @@ func extractClaimValue(claims jwt.MapClaims, claimPath string) (interface{}, boo
 			return nil, false
 		}
 	}
-	
+
 	return current, true
 }
 
@@ -117,7 +117,7 @@ func extractUsername(claims jwt.MapClaims) (string, error) {
 			return username, nil
 		}
 	}
-	
+
 	// Fallback to standard claims in order of preference
 	fallbackClaims := []string{"preferred_username", "sub", "email", "username", "name"}
 	for _, claim := range fallbackClaims {
@@ -127,7 +127,7 @@ func extractUsername(claims jwt.MapClaims) (string, error) {
 			}
 		}
 	}
-	
+
 	return "", errors.New("username not found in JWT claims")
 }
 
@@ -144,7 +144,7 @@ func extractRoles(claims jwt.MapClaims) []string {
 			}
 			return result
 		}
-		
+
 		// Handle single string (comma-separated or single value)
 		if roleStr, ok := val.(string); ok {
 			if strings.Contains(roleStr, ",") {
@@ -160,7 +160,7 @@ func extractRoles(claims jwt.MapClaims) []string {
 			return []string{roleStr}
 		}
 	}
-	
+
 	return []string{}
 }
 
@@ -179,25 +179,69 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		// Get the key ID from the token header
 		kidInterface, ok := token.Header["kid"]
-		if !ok {
-			return nil, errors.New("token missing 'kid' header")
+		if ok {
+			// Kid is present, use it to fetch the specific key
+			kid, ok := kidInterface.(string)
+			if !ok {
+				return nil, errors.New("invalid 'kid' header type")
+			}
+
+			// Fetch the public key from JWKS
+			key, err := client.GetKey(kid)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get public key: %w", err)
+			}
+
+			return key, nil
 		}
-		
-		kid, ok := kidInterface.(string)
-		if !ok {
-			return nil, errors.New("invalid 'kid' header type")
-		}
-		
-		// Fetch the public key from JWKS
-		key, err := client.GetKey(kid)
+
+		// Kid is not present, try all keys from JWKS
+		// This is normal behavior for some IdPs like Teleport
+		keys, err := client.GetAllKeys()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get public key: %w", err)
+			return nil, fmt.Errorf("failed to get JWKS keys: %w", err)
 		}
-		
-		return key, nil
+
+		// Try each key until one works
+		// Note: The jwt.Parse function will call this keyfunc and validate the signature
+		// We return the first key and let jwt.Parse try it. If it fails, jwt.Parse will fail.
+		// To properly try all keys, we need a different approach.
+
+		// Actually, we need to try parsing with each key
+		// But jwt.Parse doesn't support that pattern directly
+		// We'll return a special marker error to indicate we should try all keys
+		return nil, errors.New("token missing 'kid' header - will try all keys")
 	})
 
-	if err != nil {
+	// If we got the special error about missing kid, try all keys
+	if err != nil && strings.Contains(err.Error(), "token missing 'kid' header - will try all keys") {
+		keys, keysErr := client.GetAllKeys()
+		if keysErr != nil {
+			return nil, fmt.Errorf("failed to get JWKS keys: %w", keysErr)
+		}
+
+		// Try parsing with each key
+		var lastErr error
+		for _, key := range keys {
+			token, err = jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+				return key, nil
+			})
+
+			if err == nil && token.Valid {
+				// Successfully validated with this key
+				break
+			}
+			lastErr = err
+		}
+
+		// If still error after trying all keys, return the last error
+		if err != nil {
+			if lastErr != nil {
+				return nil, fmt.Errorf("failed to validate token with any key from JWKS: %w", lastErr)
+			}
+			return nil, fmt.Errorf("failed to validate token with any key from JWKS: %w", err)
+		}
+	} else if err != nil {
 		return nil, fmt.Errorf("failed to parse JWT token: %w", err)
 	}
 
@@ -224,7 +268,7 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 	// Validate audience if configured
 	if !setting.JWT.SkipAudienceCheck {
 		validAudience := false
-		
+
 		// Audience can be string or array
 		if aud, ok := claims["aud"].(string); ok {
 			for _, expected := range setting.JWT.Audience {
@@ -248,7 +292,7 @@ func (j *JWT) validateJWTToken(tokenString string) (jwt.MapClaims, error) {
 				}
 			}
 		}
-		
+
 		if !validAudience {
 			return nil, fmt.Errorf("invalid audience in JWT token (expected one of %v)", setting.JWT.Audience)
 		}
@@ -316,7 +360,7 @@ func autoCreateJWTUser(ctx context.Context, claims jwt.MapClaims, username strin
 		Name:               username,
 		Email:              email,
 		FullName:           fullName,
-		Passwd:             "",  // No password for JWT users
+		Passwd:             "", // No password for JWT users
 		IsActive:           setting.JWT.DefaultIsActive,
 		IsAdmin:            setting.JWT.DefaultIsAdmin,
 		LoginType:          auth_model.OAuth2, // Use OAuth2 login type for now
@@ -428,7 +472,7 @@ func (j *JWT) Verify(req *http.Request, w http.ResponseWriter, store DataStore, 
 
 	// Extract roles from claims
 	roles := extractRoles(claims)
-	
+
 	// Get the user by username
 	user, err := user_model.GetUserByName(req.Context(), username)
 	if err != nil {
